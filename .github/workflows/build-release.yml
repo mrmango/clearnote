@@ -38,7 +38,7 @@ jobs:
 
           # ── macOS Intel (x86-64) ───────────────────────────────────────────
           # macos-13 is the last GitHub-hosted Intel macOS runner
-          - os: macos-13
+          - os: macos-15-intel
             artifact_name: ClearNote
             asset_name: ClearNote-macOS-x86_64
             pyinstaller_args: --onefile --windowed --name ClearNote
