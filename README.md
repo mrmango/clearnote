@@ -1,1 +1,2 @@
 "# clearnote" 
+Clearnote was created as a replacement to the bloated notepad of new and avoid overloaded features of other notepads. This should be fine running on Mac OS, Windows and Linux. Builds are made available under actions to download. Or simple have Python installed and download the .py file.
