@@ -15,23 +15,35 @@ permissions:
 # ─────────────────────────────────────────────────────────────────────────────
 jobs:
   build:
-    name: Build on ${{ matrix.os }}
+    name: Build — ${{ matrix.asset_name }}
     runs-on: ${{ matrix.os }}
 
     strategy:
       fail-fast: false   # don't cancel other platforms if one fails
       matrix:
         include:
+
+          # ── Windows x86-64 ─────────────────────────────────────────────────
           - os: windows-latest
             artifact_name: ClearNote.exe
             asset_name: ClearNote-Windows-x86_64.exe
             pyinstaller_args: --onefile --windowed --name ClearNote
 
+          # ── macOS Apple Silicon (M-series, arm64) ──────────────────────────
+          # macos-latest = macos-14 which runs on Apple Silicon runners
           - os: macos-latest
             artifact_name: ClearNote
             asset_name: ClearNote-macOS-arm64
             pyinstaller_args: --onefile --windowed --name ClearNote
 
+          # ── macOS Intel (x86-64) ───────────────────────────────────────────
+          # macos-13 is the last GitHub-hosted Intel macOS runner
+          - os: macos-13
+            artifact_name: ClearNote
+            asset_name: ClearNote-macOS-x86_64
+            pyinstaller_args: --onefile --windowed --name ClearNote
+
+          # ── Linux x86-64 ───────────────────────────────────────────────────
           - os: ubuntu-latest
             artifact_name: ClearNote
             asset_name: ClearNote-Linux-x86_64
@@ -66,41 +78,119 @@ jobs:
         run: |
           pyinstaller ${{ matrix.pyinstaller_args }} clearnote.py
 
-      # ── 6. Verify the binary exists ───────────────────────────────────────
+      # ── 6. Ad-hoc sign the binary (macOS only) ────────────────────────────
+      #
+      # Without an Apple Developer certificate, Gatekeeper blocks unsigned
+      # binaries with "cannot be verified". Ad-hoc signing with "-" is free,
+      # requires no account, and satisfies Gatekeeper on the local machine
+      # so users only need to right-click → Open ONCE on first launch,
+      # rather than getting a hard block.
+      #
+      # For a fully trusted build with no prompts at all, you would need:
+      #   - Apple Developer Program membership ($99/yr)
+      #   - codesign with your Developer ID certificate
+      #   - notarytool submission to Apple's notarisation service
+      # That can be added later — see the commented block at the bottom.
+      #
+      - name: Ad-hoc code sign (macOS only)
+        if: runner.os == 'macOS'
+        run: |
+          codesign --force --deep --sign - "dist/${{ matrix.artifact_name }}"
+          echo "✓ Ad-hoc signature applied"
+
+      # ── 7. Verify the binary exists ───────────────────────────────────────
       - name: Verify build output
         shell: bash
         run: |
           ls -lh dist/
           test -f "dist/${{ matrix.artifact_name }}" && echo "✓ Binary found" || (echo "✗ Binary missing" && exit 1)
 
-      # ── 7. Upload binary as workflow artifact (always available) ──────────
+      # ── 8. Rename asset to include platform in filename ───────────────────
+      - name: Rename artifact for release
+        shell: bash
+        run: |
+          cp "dist/${{ matrix.artifact_name }}" "dist/${{ matrix.asset_name }}"
+
+      # ── 9. Upload binary as workflow artifact (always available) ──────────
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset_name }}
-          path: dist/${{ matrix.artifact_name }}
+          path: dist/${{ matrix.asset_name }}
           retention-days: 30
 
-      # ── 8. Attach to GitHub Release (only on tag pushes) ──────────────────
+      # ── 10. Attach to GitHub Release (only on tag pushes) ─────────────────
       - name: Upload to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/${{ matrix.artifact_name }}
+          files: dist/${{ matrix.asset_name }}
           name: ClearNote ${{ github.ref_name }}
           body: |
             ## ClearNote ${{ github.ref_name }}
 
-            Cross-platform text editor — lightweight Notepad replacement.
+            Lightweight cross-platform text editor — Notepad replacement.
 
             ### Downloads
             | Platform | File |
             |----------|------|
             | Windows  | `ClearNote-Windows-x86_64.exe` |
-            | macOS    | `ClearNote-macOS-arm64` |
+            | macOS (M1/M2/M3/M4) | `ClearNote-macOS-arm64` |
+            | macOS (Intel) | `ClearNote-macOS-x86_64` |
             | Linux    | `ClearNote-Linux-x86_64` |
 
-            **macOS:** You may need to right-click → Open the first time (Gatekeeper).
-            **Linux:** `chmod +x ClearNote-Linux-x86_64` before running.
+            ### First run on macOS
+            Binaries are ad-hoc signed but not notarised (no Apple Developer certificate).
+            On first launch macOS Gatekeeper will show a warning.
+
+            **To open it:**
+            1. Right-click (or Control-click) the binary
+            2. Choose **Open**
+            3. Click **Open** in the dialog
+
+            You only need to do this once — macOS remembers the exception.
+
+            Or remove the quarantine flag from Terminal:
+            ```bash
+            xattr -d com.apple.quarantine ClearNote-macOS-arm64
+            # or for Intel:
+            xattr -d com.apple.quarantine ClearNote-macOS-x86_64
+            ```
+
+            ### First run on Linux
+            ```bash
+            chmod +x ClearNote-Linux-x86_64
+            ./ClearNote-Linux-x86_64
+            ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OPTIONAL: Full Apple notarisation (eliminates Gatekeeper warnings entirely)
+# Uncomment and configure if you get an Apple Developer certificate ($99/yr).
+#
+# Replace the ad-hoc sign step with:
+#
+#      - name: Full code sign + notarise (macOS)
+#        if: runner.os == 'macOS'
+#        env:
+#          APPLE_CERT_BASE64: ${{ secrets.APPLE_CERT_BASE64 }}
+#          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+#          APPLE_ID: ${{ secrets.APPLE_ID }}
+#          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+#          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+#        run: |
+#          echo "$APPLE_CERT_BASE64" | base64 --decode > cert.p12
+#          security create-keychain -p "" build.keychain
+#          security import cert.p12 -k build.keychain -P "$APPLE_CERT_PASSWORD" -T /usr/bin/codesign
+#          security set-key-partition-list -S apple-tool:,apple: -s -k "" build.keychain
+#          security default-keychain -s build.keychain
+#          codesign --force --deep --options runtime \
+#            --sign "Developer ID Application: Your Name ($APPLE_TEAM_ID)" \
+#            "dist/${{ matrix.artifact_name }}"
+#          xcrun notarytool submit "dist/${{ matrix.artifact_name }}" \
+#            --apple-id "$APPLE_ID" --password "$APPLE_ID_PASSWORD" \
+#            --team-id "$APPLE_TEAM_ID" --wait
+#          xcrun stapler staple "dist/${{ matrix.artifact_name }}"
+# ─────────────────────────────────────────────────────────────────────────────
